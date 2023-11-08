@@ -1,0 +1,709 @@
+#================================================================================
+# RogueDoc.rogue
+# October 29, 2023
+#================================================================================
+
+$define VERSION "1.0"
+$define DATE    "October 29, 2023"
+
+$requireRogue "2.33"
+
+uses Console/CommandLineParser
+
+try
+  RogueDoc( System.command_line_arguments )
+catch (error:Error)
+  Console.error.println error
+  System.exit 1
+endTry
+
+class RogueDoc
+  PROPERTIES
+    output_folder : File
+    output_file   : File
+    is_split  : Logical
+
+    modules = @{}
+    types   = @{}
+    groups  = @{}
+
+    writer : PrintWriter
+
+    ch_to_wiki_url = String[][
+      "-", "!", "%22", "%23", "$", "%25", "&", "'", "(", ")", "*", "-", ",", "-", ".", "-",
+      "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "-", "=", "-", "%3F",
+      "@", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O",
+      "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "%5B", "%5C", "%5D", "%5E", "_",
+      "%60", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o",
+      "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "%7B", "%7C", "%7D", "~"
+    ]
+
+    link_names = [String:String]
+
+  METHODS
+    method init( args:String[] )
+      local command = parse_args( args )
+
+      #trace command
+      # has //options and possibly //args
+
+      if (command//options//help or command//args.is_empty)
+        print_usage
+        System.exit 0
+      endIf
+
+      if (command//args.count > 1)
+        throw Error( "Too many arguments. A single API .json file is expected." )
+      endIf
+
+      is_split = command//options//split?
+
+      local api_file = File( command//args.first->String )
+      if (not api_file.exists)
+        throw Error( "No such API file: " + api_file )
+      endIf
+
+      if local output = command//options//output
+        output_file = File( output->String )
+      else
+        output_file = File( api_file.split_filepath_and_extension.filepath )
+      endIf
+
+      if (output_file.is_folder)
+        output_file /= "API"
+      elseIf (not output_file.exists)
+        println "> Create $/"(output_file)
+        output_file.create_folder
+        output_file /= "API"
+      endIf
+
+      output_folder = output_file.parent
+
+      load_api( api_file )
+
+      generate_markdown
+
+    method generate_markdown
+      generate_api_home
+      generate_api_libraries
+      if (not is_split) writer.close
+
+    method generate_api_home
+      println "Generating documentation..."
+      println "  $.md"(output_file)
+      writer = (output_file+".md").print_writer
+
+      writer.println "# Contents"
+      forEach (group_name in groups.keys)
+        writer.print "- "
+        print_html_link( group_name, "", group_name )
+        writer.println
+        local group = groups[group_name]
+        forEach (filename in group.keys)
+          local indent = "    - "
+          local items = group[filename]
+          if (items.count > 1)
+            writer.println indent + filename
+            indent = "    " + indent
+          endIf
+          forEach (item in items)
+            writer.print indent
+            local text : String
+            if (item//is_routine)
+              text = "routine $"(item//signature)
+            else
+              text = link_name( item//scoped_name )
+            endIf
+            print_html_link( text, text, item//library_name )
+            writer.println
+          endForEach
+        endForEach
+      endForEach
+      writer.println
+
+      if (is_split) writer.close
+
+    method generate_api_libraries
+      forEach (group_name in groups.keys)
+        if (is_split)
+          local filename = "$-Library-API.md"(group_name)
+          println "  "+output_folder/filename
+          writer = (output_folder/filename).print_writer
+        endIf
+
+        local group = groups[group_name]
+        forEach (filename in group.keys)
+          writer.println "# $"(filename)
+          local items = group[filename]
+          forEach (item in items)
+            local text : String
+            if (item//is_routine)
+              print_routine_info( item )
+              writer.println
+
+            else
+              print_html_anchor( "h2", link_name(item//scoped_name) )
+              if (item//augmented_type)
+                writer.print   "augments "
+                print_html_type( item//augmented_type, item//doc_augmented_type )
+                writer.println
+                writer.println
+              endIf
+              if (item//base_class)
+                writer.print   "extends "
+                print_html_type( item//base_class, item//doc_base_class )
+                writer.println
+                writer.println
+              endIf
+              if (item//aspects)
+                writer.print "incorporates "
+                forEach (a at i in item//aspects)
+                  if (i > 0) writer.print ", "
+                  local type = types[a]
+                  if (type)
+                    print_html_link( type//name, link_name(type//scoped_name), type//library_name )
+                  else
+                    print_escaped_markdown( a )
+                  endIf
+                endForEach
+              endIf
+
+              print_html_description( item//description, "### Description" )
+
+              print_markdown_categories( item//categories )
+              print_markdown_properties( item//global_properties, "Global Properties" )
+              print_markdown_methods( item//global_methods, "Global Methods" )
+              print_markdown_properties( item//properties, "Properties" )
+              print_markdown_methods( item//methods, "Methods" )
+            endIf
+
+            writer.println
+
+          endForEach
+        endForEach
+
+        if (is_split) writer.close
+      endForEach
+
+    method link_name( type_name:String )->String
+      local entry = link_names.find( type_name )
+      if (entry) return entry.value
+
+      local type = types[ type_name ]
+      if (not type)
+        link_names[type_name] = null
+        return null
+      endIf
+
+      local name = String()
+
+      if (type//attributes.contains("enum"))
+        name.print( "enum " )
+        name.print( type//name )
+        if (type//attributes.count > 1)
+          name.print " ["
+          local first = true
+          forEach (attribute in type//attributes)
+            if (attribute == "enum") nextIteration
+            if (first) first = false
+            else       name.print ','
+            name.print( attribute )
+          endForEach
+          name.print ']'
+        endIf
+      else
+        name.print( "class " )
+        name.print( type//name )
+        local first = true
+        forEach (attribute in type//attributes)
+          if (attribute == "class") nextIteration
+          if (first) name.print( " [" ); first = false
+          else       name.print ','
+          name.print( attribute )
+        endForEach
+        if (not first) name.print ']'
+      endIf
+
+      link_names[type_name] = name
+      return name
+
+    method print_escaped_markdown( text:String )->String
+      forEach (ch in text)
+        if ("*_\\&[]<>".contains(ch)) writer.print '\\'
+        writer.print ch
+      endForEach
+
+    method print_escaped_html( text:String, writer=this.writer:PrintWriter )->String
+      forEach (ch in text)
+        which (ch)
+          case '&':  writer.print "&amp;"
+          case '<':  writer.print "&lt;"
+          case '>':  writer.print "&gt;"
+          others:    writer.print ch
+        endWhich
+      endForEach
+
+    method print_escaped_html_md( text:String, writer=this.writer:PrintWriter )->String
+      # Also escape markdown formatting *, _, `
+      forEach (ch in text)
+        which (ch)
+          case '&':  writer.print "&amp;"
+          case '<':  writer.print "&lt;"
+          case '>':  writer.print "&gt;"
+          case '*':  writer.print "&#42;"
+          case '_':  writer.print "&#95;"
+          case '`':  writer.print "&#96;"
+          others:    writer.print ch
+        endWhich
+      endForEach
+
+    method print_html_anchor( h:String, name:String, link=null:String )
+      if (not link) link = name
+      writer.print ''<a name="''
+      print_html_url( link )
+      writer.print ''"><$>$</$></a>''(h,name,h)
+      writer.println
+      writer.println
+
+    method print_html_description( description:Value, header=null:String )
+      if (not description) return
+
+      writer.println
+      if (header) writer.println header
+
+      local text = description->String.trimmed
+
+      local margin = 2
+      forEach (line in LineReader(text))
+        if (line.count > 1 and line[1] != ' ')
+          margin = 1
+          escapeForEach
+        endIf
+      endForEach
+
+      # Quick and dirty for now. Will eventually make this better.
+      local new_paragraph = false
+      local indented = false
+      forEach (line in LineReader(text))
+        line = line.unleft(margin)
+        local indent = line.extract_indentation
+        if (indent.count)
+          if (new_paragraph)
+            writer.print "<br>"
+            if (not indented) writer.print "<br>"
+            new_paragraph = false
+          elseIf (not indented)
+            writer.print "<br>"
+          endIf
+          forEach (ch in indent)
+            if (ch == ' ') writer.print "&nbsp;"
+            else           writer.print "&nbsp;&nbsp;"
+          endForEach
+          print_escaped_html_md( line.unleft(indent.count) )
+          writer.print "<br>"
+          indented = true
+        else
+          line .= trimmed
+          if (line == "")
+            new_paragraph = true
+          else
+            if (new_paragraph)
+              writer.print "<br>"
+              if (not indented) writer.print "<br>"
+              new_paragraph = false
+            endIf
+            print_escaped_html( line )
+            writer.print ' '
+            indented = false
+          endIf
+        endIf
+      endForEach
+
+    method print_html_type( type_name:String, link_type_name:String, writer=this.writer:PrintWriter )
+      local type = types[link_type_name]
+
+      local link_name = link_name( link_type_name )
+
+      type_name = without_module_names( type_name )
+      if (link_name)
+        writer.print ''<a href="''
+        if (type) writer.print "$-Library-API"(type//library_name)
+        writer.print '#'
+        forEach (ch in link_name)
+          if (ch.is_alphanumeric or ch == '-' or ch == '_') writer.print(ch)
+          elseIf (ch == ' ') writer.print '-'
+        endForEach
+        writer.print ''">''
+        print_escaped_html( type_name, writer )
+        writer.print "</a>"
+      elseIf (type_name.begins_with("(Function("))
+        print_escaped_html( type_name.unleft(1).unright(1), writer )
+      else
+        print_escaped_html( type_name, writer )
+      endIf
+
+    method print_markdown_categories( categories:Value )
+      if (not categories) return
+
+      writer.println
+      writer.println "### Categories"
+      writer.println
+      writer.println "<table>"
+      writer.println "<tr><th>Category</th><th>Value</th><th>Description</th></tr>"
+      forEach (category in categories)
+        writer.println "<tr>"
+        writer.print   "<td>"
+        print_escaped_html( category//name )
+        writer.print   "</td>"
+        writer.print   "<td>"
+        print_escaped_html( category//value->Int32 )
+        writer.print   "</td>"
+        writer.print   "<td>"
+        print_html_description( category//description )
+        writer.print   "</td>"
+        writer.println "</tr>"
+      endForEach
+      writer.println "</table>"
+      writer.println
+
+    method print_routine_info( m:Value )
+      print_html_anchor( "h2", "routine " + enhanced_signature(m,&with_links), "routine "+m//signature )
+      print_html_description( m//description, "### Description" )
+
+    method print_markdown_methods( methods:Value, header:String )
+      if (not methods) return
+
+      writer.println
+      writer.println "### $"(header)
+      writer.println
+      writer.println "<table>"
+      writer.println "<tr><th>Signature</th><th>Return Type</th><th>Description</th></tr>"
+      forEach (m in methods)
+        writer.println "<tr>"
+        writer.print   "<td>"
+        writer.print enhanced_signature( m, &with_links )
+        writer.print   "</td>"
+        writer.print   "<td>"
+        if (m//return_type) print_html_type( m//return_type, m//doc_return_type )
+        writer.print   "</td>"
+        writer.print   "<td>"
+        print_html_description( m//description )
+        writer.print   "</td>"
+        writer.println "</tr>"
+      endForEach
+      writer.println "</table>"
+      writer.println
+
+    method print_markdown_properties( properties:Value, header:String )
+      if (not properties) return
+
+      writer.println
+      writer.println "### $"(header)
+      writer.println
+      writer.println "<table>"
+      writer.println "<tr><th>Name</th><th>Type</th><th>Description</th></tr>"
+      forEach (property in properties)
+        writer.println "<tr>"
+        writer.print   "<td>"
+        print_escaped_html( property//name )
+        writer.print   "</td>"
+        writer.print   "<td>"
+        print_html_type( property//type, property//doc_type )
+        writer.print   "</td>"
+        writer.print   "<td>"
+        print_html_description( property//description )
+        writer.print   "</td>"
+        writer.println "</tr>"
+      endForEach
+      writer.println "</table>"
+      writer.println
+
+    method print_markdown_description( description:Value )
+      if (not description) return
+      local text = description->String.trimmed
+      forEach (line in LineReader(text))
+        writer.println line.after_first('#').trimmed
+      endForEach
+
+    method print_html_link( text:String, link:String, library_name:String )->String
+      writer.print ''<a href="''
+      if (is_split) writer.print ''$-Library-API''(library_name)
+      writer.print '#'
+      print_html_url( link )
+      writer.print ''">''
+      writer.print text
+      writer.print "</a>"
+
+    method print_html_url( text:String )
+      forEach (ch in text)
+        if (ch.is_letter or ch == '$')
+          writer.print ch
+        else
+          which (ch)
+            case ' ', '_': writer.print '-'
+            case '(': writer.print "OP"
+            case ')': writer.print "CP"
+            case '[': writer.print "OB"
+            case ']': writer.print "CB"
+            case '{': writer.print "OC"
+            case '}': writer.print "CC"
+            case '<': writer.print "OA"
+            case '>': writer.print "CA"
+            others:   writer.print "-"
+          endWhich
+        endIf
+      endForEach
+
+    method print_markdown_link( text:String )->String
+      writer.print '['
+      print_escaped_markdown( text )
+      writer.print ']'
+      writer.print "(#"
+      forEach (ch in text)
+        if (ch.is_alphanumeric or ch == '-' or ch == '_') writer.print(ch)
+        elseIf (ch == ' ') writer.print '-'
+      endForEach
+      writer.print ')'
+
+    method load_api( api_file:File )
+      local api = JSON.parse( api_file )
+      if (not api//modules)
+        throw Error( "Invalid API file - 'modules' array expected." )
+      endIf
+
+      forEach (mod in api//modules)
+        forEach (type in mod//types)
+          remove_items_with_leading_underscore( type, "categories" )
+          remove_items_with_leading_underscore( type, "global_properties" )
+          remove_items_with_leading_underscore( type, "global_methods" )
+          remove_items_with_leading_underscore( type, "properties" )
+          remove_items_with_leading_underscore( type, "methods" )
+        endForEach
+        remove_items_with_leading_underscore( mod, "types" )
+      endForEach
+
+      forEach (mod in api//modules)
+        modules[mod//name] = mod
+        forEach (type in mod//types)
+          if (type//name == "Routine")
+            forEach (m in type//global_methods)
+              m//is_routine = true
+              m//sort_name = m//signature
+              enhance_signature( m )
+              m//library_name = add_to_group( m//filepath, m )
+            endForEach
+          else
+            enhance_signature( forEach in type//global_methods )
+            enhance_signature( forEach in type//methods )
+            types[type//scoped_name] = type
+            type//sort_name = type//name
+            type//library_name = add_to_group( type//filepath, type )
+          endIf
+        endForEach
+      endForEach
+
+      groups.sort( (a,b) => doc_sort(a,b) )
+      forEach (group in groups.values)
+        group.sort( (a,b) => doc_sort(a,b) )
+        forEach (file in group.values)
+          file.sort( (a,b) => doc_sort(a//sort_name,b//sort_name) )
+          forEach (type in file)
+            if (type//global_properties) type//global_properties.sort( (a,b) => doc_sort(a//name,b//name) )
+            if (type//properties)        type//properties.sort( (a,b) => doc_sort(a//name,b//name) )
+            if (type//global_methods)    type//global_methods.sort( (a,b) => doc_sort(a//signature,b//signature) )
+            if (type//methods)           type//methods.sort( (a,b) => doc_sort(a//signature,b//signature) )
+          endForEach
+        endForEach
+      endForEach
+
+    method add_to_group( filepath:String, value:Value )->String
+      local group_name = filepath.before_first(".rogue")
+      if (group_name.contains('/')) group_name = File(group_name).folder
+
+      local group = groups[ group_name ]
+      if (not group)
+        group = @{}
+        groups[group_name] = group
+      endIf
+
+      local filename = File( filepath ).filename
+      local file = group[filename]
+      if (not file)
+        file = @[]
+        group[filename] = file
+      endIf
+
+      file.add( value )
+
+      return group_name
+
+    method without_module_names( text:String )->String
+      local result = String()
+      local scanner = Scanner( text )
+      local id : String
+      while (scanner.has_another)
+        if (id)
+          if (scanner.consume("::"))
+            id.clear
+            id.print( scanner.scan_identifier )
+          else
+            result.print( id )
+            id = null
+            result.print( scanner.read )
+          endIf
+        else
+          if (scanner.next_is_identifier)
+            id = String()
+            id.print( scanner.scan_identifier )
+          else
+            result.print( scanner.read )
+          endIf
+        endIf
+      endWhile
+
+      if (id)
+        result.print( id )
+      endIf
+
+      return result
+
+    method enhance_signature( m:Value )
+      m//signature = without_module_names( enhanced_signature(m) )
+
+    method enhanced_signature( m:Value, &with_links )->String
+      local sig = String()
+      if (with_links) print_escaped_html_md( without_module_names(m//name), sig )
+      else            sig.print( m//name )
+      sig.print( '(' )
+      local first = true
+      forEach (param in m//parameters)
+        if (first)
+          sig.print ' '
+          first = false
+        else
+          sig.print ", "
+        endIf
+        if (param//default_parameter)
+          sig.print '&'
+          sig.print param//name
+          if (param//default_value != "false")
+            sig.print '='
+            sig.print param//default_value
+          endIf
+        elseIf (param.contains("default_value"))
+          sig.print '['
+          sig.print param//name
+          sig.print '='
+          sig.print param//default_value
+          sig.print ':'
+          if (with_links) print_html_type( param//type, param//doc_type, sig )
+          else sig.print param//type
+          sig.print ']'
+        else
+          sig.print param//name
+          sig.print ':'
+          if (with_links) print_html_type( param//type, param//doc_type, sig )
+          else sig.print param//type
+        endIf
+      endForEach
+      if (not first) sig.print(' ')
+      sig.print( ')' )
+      return sig
+
+    method remove_items_with_leading_underscore( value:Value, table_name:String )
+      if (not value.contains(table_name)) return
+
+      forEach (item in value[table_name] step -1)
+        if (item//name->String.begins_with('_'))
+          value[table_name].remove( item )
+        endIf
+      endForEach
+
+      if (value[table_name].count == 0)
+        value.remove( table_name )
+      endIf
+
+    method parse_args( args:String[] )->Value
+      local command = CommandLineParser().
+      [
+        option( "--help",    &aliases=["-h","-?"] )
+        option( "--output=", &alias="-o" )
+        option( "--split",   &alias="-s" )
+      ].parse( args )
+      return command
+
+    method print_usage
+      println "RogueDoc v$"(VERSION)
+      println "$"(DATE)
+      println
+
+      println @|USAGE
+               |  roguedoc [OPTIONS] <api-file>.json
+               |
+               |API FILE
+               |  Generate the input API JSON file with 'roguec --doc' for the standard library
+               |  or 'roguec --doc=<folder-or-filepath>'.
+               |
+               |OPTIONS
+               |  --help, -h, -?
+               |    Show this help text.
+               |
+               |  --output=<filepath>, -o <filepath>
+               |    Specify the file or folder to write output to. If a file is specified, only
+               |    a high-level document is generated. If a folder is specified, both
+               |    high-level and detailed documents will be generated.
+               |
+               |  --split, -s
+               |    Splits the output into a primary table of contents file with separate files
+               |    for each library path.
+               |================================================================================
+endClass
+
+routine doc_sort( a:String, b:String )->Logical
+  if (a.begins_with("init("))
+    if (not b.begins_with("init(")) return true
+  else
+    if (b.begins_with("init(")) return false
+  endIf
+
+  local checked_args = false
+  local limit = a.count.or_smaller( b.count )
+  forEach (i in 0..<limit)
+    local ch_a = a[i]
+    local ch_b = b[i]
+    if (ch_a.is_letter)
+      if (ch_b.is_letter)
+        local result = ch_a.to_lowercase <> ch_b.to_lowercase
+        if (result < 0) return true
+        if (result > 0) return false
+      else
+        return false  # b has fewer letters and thus comes before a
+      endIf
+    else
+      if (ch_b.is_letter)
+        return true
+      else
+        if (not checked_args)
+          if (a.ends_with("()"))
+            if (not b.ends_with("()")) return true
+          else
+            if (b.ends_with("()")) return false
+          endIf
+          checked_args = true
+        endIf
+
+        local result = ch_a - ch_b
+        if (result < 0) return true
+        if (result > 0) return false
+      endIf
+    endIf
+  endForEach
+
+  # Equal so far
+  return (a.count <= b.count)
+endRoutine
+
+class _Dawg
+  METHODS
+    method _woof
+endClass
