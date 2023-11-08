@@ -19,7 +19,8 @@ endTry
 
 class RogueDoc
   PROPERTIES
-    output_file : File
+    output_folder : File
+    output_file   : File
 
     modules = @{}
     types   = @{}
@@ -35,6 +36,8 @@ class RogueDoc
       "%60", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o",
       "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "%7B", "%7C", "%7D", "~"
     ]
+
+    link_names = [String:String]
 
   METHODS
     method init( args:String[] )
@@ -71,18 +74,23 @@ class RogueDoc
         output_file /= "API"
       endIf
 
-      read_api( api_file )
+      output_folder = output_file.parent
 
-      writer = (output_file+".md").print_writer
+      load_api( api_file )
+
       generate_markdown
-      writer.close
 
     method generate_markdown
-      #{
+      generate_api_home
+      generate_api_libraries
+
+    method generate_api_home
+      writer = (output_file+".md").print_writer
+
       writer.println "# Contents"
       forEach (group_name in groups.keys)
         writer.print "- "
-        print_markdown_link( group_name )
+        print_html_link( group_name, group_name )
         writer.println
         local group = groups[group_name]
         forEach (filename in group.keys)
@@ -94,80 +102,110 @@ class RogueDoc
             if (item//is_routine)
               text = "routine $"(item//signature)
             else
-              if (item//attributes.contains("enum"))
-                text = "enum $"(item//name)
-              else
-                text = "class $"(item//name)
-              endIf
+              text = link_name( item//scoped_name )
             endIf
-            print_markdown_link( text )
+            print_html_link( text, item//library_name )
             writer.println
           endForEach
         endForEach
       endForEach
-      }#
 
+      writer.close
+
+    method generate_api_libraries
       forEach (group_name in groups.keys)
-        writer.println
-        writer.println "# $"(group_name)
+        writer = (output_folder/"$-Library-API.md"(group_name)).print_writer
+
+        print_html_anchor( "h1", group_name )
         local group = groups[group_name]
         forEach (filename in group.keys)
           writer.println "## $"(filename)
           local file = group[filename]
           forEach (item in file)
-            writer.print "### "
             local text : String
             if (item//is_routine)
               text = "routine $"(item//signature)
-              print_escaped_markdown( text )
+              print_html_anchor( "h3", text )
               writer.println
             else
-              if (item//attributes.contains("enum"))
-                text = "enum $"(item//name)
-                print_escaped_markdown( text )
+              print_html_anchor( "h3", link_name(item//scoped_name) )
+              if (item//base_class)
+                writer.print   "extends "
+                print_html_type( item//base_class, item//doc_base_class )
                 writer.println
-                if (item//attributes.count > 1)
-                  writer.println "#### Attributes"
-                  writer.print '['
-                  local first = true
-                  forEach (attribute in item//attributes)
-                    if (attribute == "enum") nextIteration
-                    if (first) first = false
-                    else       writer.print ','
-                    writer.print attribute
-                  endForEach
-                  writer.println ']'
-                endIf
-              else
-                text = "class $"(item//name)
-                print_escaped_markdown( text )
                 writer.println
-                local is_class = item//attributes.contains("class")
-                if ((is_class and item//attributes.count > 1) or (not is_class and item//attributes))
-                  writer.println "#### Attributes"
-                  writer.print '['
-                  local first = true
-                  forEach (attribute in item//attributes)
-                    if (attribute == "class") nextIteration
-                    if (first) first = false
-                    else       writer.print ','
-                    writer.print attribute
-                  endForEach
-                  writer.println ']'
-                endIf
+              endIf
+              if (item//aspects)
+                writer.print "incorporates "
+                forEach (a at i in item//aspects)
+                  if (i > 0) writer.print ", "
+                  local type = types[a]
+                  if (type)
+                    print_html_link( link_name(type//scoped_name), type//library_name )
+                  else
+                    print_escaped_markdown( a )
+                  endIf
+                endForEach
               endIf
             endIf
+
             print_html_description( item//description )
 
             print_markdown_categories( item//categories )
             print_markdown_properties( item//global_properties, "Global Properties" )
+            print_markdown_methods( item//global_methods, "Global Methods" )
             print_markdown_properties( item//properties, "Properties" )
+            print_markdown_methods( item//methods, "Methods" )
 
             writer.println
 
           endForEach
         endForEach
+
+        writer.close
       endForEach
+
+    method link_name( type_name:String )->String
+      local entry = link_names.find( type_name )
+      if (entry) return entry.value
+
+      local type = types[ type_name ]
+      if (not type)
+        link_names[type_name] = null
+        return null
+      endIf
+
+      local name = String()
+
+      if (type//attributes.contains("enum"))
+        name.print( "enum " )
+        name.print( type//name )
+        if (type//attributes.count > 1)
+          name.print " ["
+          local first = true
+          forEach (attribute in type//attributes)
+            if (attribute == "enum") nextIteration
+            if (first) first = false
+            else       name.print ','
+            name.print( attribute )
+          endForEach
+          name.print ']'
+        endIf
+      else
+        name.print( "class " )
+        name.print( type//name )
+        local first = true
+        forEach (attribute in type//attributes)
+          if (attribute == "class") nextIteration
+          if (first) name.print( " [" ); first = false
+          else       name.print ','
+          name.print( attribute )
+        endForEach
+        if (not first) name.print ']'
+      endIf
+
+      link_names[type_name] = name
+      return name
 
     method print_escaped_markdown( text:String )->String
       forEach (ch in text)
@@ -175,7 +213,7 @@ class RogueDoc
         writer.print ch
       endForEach
 
-    method print_escaped_html( text:String )->String
+    method print_escaped_html( text:String, writer=this.writer:PrintWriter )->String
       forEach (ch in text)
         which (ch)
           case '&':  writer.print "&amp;"
@@ -184,6 +222,13 @@ class RogueDoc
           others:    writer.print ch
         endWhich
       endForEach
+
+    method print_html_anchor( h:String, name:String )
+      writer.print ''<a name="''
+      print_html_url( name )
+      writer.print ''"><$>$</$></a>''(h,name,h)
+      writer.println
+      writer.println
 
     method print_html_description( description:Value )
       if (not description) return
@@ -198,33 +243,64 @@ class RogueDoc
         endIf
       endForEach
 
-      writer.print "<pre>"
+      # Quick and dirty for now. Will eventually make this better.
+      local new_paragraph = false
+      local indented = false
       forEach (line in LineReader(text))
-        writer.println line.unleft(margin)
-      endForEach
-      writer.println "</pre>"
-
-    method print_html_type( type_name:String, link_type_name:String )
-      local type = types[ link_type_name ]
-      type_name = without_module_names( type_name )
-      if (type)
-        writer.print ''<a href="#''
-        if (type//attributes.contains("enum"))
-          writer.print( "enum-" )
+        line = line.unleft(margin)
+        local indent = line.extract_indentation
+        if (indent.count)
+          if (new_paragraph)
+            writer.print "<br>"
+            if (not indented) writer.print "<br>"
+            new_paragraph = false
+          elseIf (not indented)
+            writer.print "<br>"
+          endIf
+          forEach (ch in indent)
+            if (ch == ' ') writer.print "&nbsp;"
+            else           writer.print "&nbsp;&nbsp;"
+          endForEach
+          print_escaped_html( line.unleft(indent.count) )
+          writer.print "<br>"
+          indented = true
         else
-          writer.print( "class-" )
+          line .= trimmed
+          if (line == "")
+            new_paragraph = true
+          else
+            if (new_paragraph)
+              writer.print "<br>"
+              if (not indented) writer.print "<br>"
+              new_paragraph = false
+            endIf
+            print_escaped_html( line )
+            indented = false
+          endIf
         endIf
-        forEach (ch in type//name->String)
+      endForEach
+
+    method print_html_type( type_name:String, link_type_name:String, writer=this.writer:PrintWriter )
+      local type = types[type_name]
+
+      local link_name = link_name( link_type_name )
+
+      type_name = without_module_names( type_name )
+      if (link_name)
+        writer.print ''<a href="''
+        if (type) writer.print "$-Library-API"(type//library_name)
+        writer.print '#'
+        forEach (ch in link_name)
           if (ch.is_alphanumeric or ch == '-' or ch == '_') writer.print(ch)
           elseIf (ch == ' ') writer.print '-'
         endForEach
         writer.print ''">''
-        print_escaped_html( type_name )
+        print_escaped_html( type_name, writer )
         writer.print "</a>"
       elseIf (type_name.begins_with("(Function("))
-        print_escaped_html( type_name.unleft(1).unright(1) )
+        print_escaped_html( type_name.unleft(1).unright(1), writer )
       else
-        print_escaped_html( type_name )
+        print_escaped_html( type_name, writer )
       endIf
 
     method print_markdown_categories( categories:Value )
@@ -245,6 +321,30 @@ class RogueDoc
         writer.print   "</td>"
         writer.print   "<td>"
         print_html_description( category//description )
+        writer.print   "</td>"
+        writer.println "</tr>"
+      endForEach
+      writer.println "</table>"
+      writer.println
+
+    method print_markdown_methods( methods:Value, header:String )
+      if (not methods) return
+
+      writer.println
+      writer.println "#### $"(header)
+      writer.println
+      writer.println "<table>"
+      writer.println "<tr><th>Signature</th><th>Return Type</th><th>Description</th></tr>"
+      forEach (m in methods)
+        writer.println "<tr>"
+        writer.print   "<td>"
+        writer.print enhanced_signature( m, &with_links )
+        writer.print   "</td>"
+        writer.print   "<td>"
+        if (m//return_type) print_html_type( m//return_type, m//doc_return_type )
+        writer.print   "</td>"
+        writer.print   "<td>"
+        print_html_description( m//description )
         writer.print   "</td>"
         writer.println "</tr>"
       endForEach
@@ -282,6 +382,33 @@ class RogueDoc
         writer.println line.after_first('#').trimmed
       endForEach
 
+    method print_html_link( text:String, library_name:String )->String
+      writer.print ''<a href="$-Library-API#''(library_name)
+      print_html_url( text )
+      writer.print ''">''
+      writer.print text
+      writer.print "</a>"
+
+    method print_html_url( text:String )
+      forEach (ch in text)
+        if (ch.is_letter or ch == '$')
+          writer.print ch
+        else
+          which (ch)
+            case ' ', '_': writer.print '-'
+            case '(': writer.print "OP"
+            case ')': writer.print "CP"
+            case '[': writer.print "OB"
+            case ']': writer.print "CB"
+            case '{': writer.print "OC"
+            case '}': writer.print "CC"
+            case '<': writer.print "OA"
+            case '>': writer.print "CA"
+            others:   writer.print "-"
+          endWhich
+        endIf
+      endForEach
+
     method print_markdown_link( text:String )->String
       writer.print '['
       print_escaped_markdown( text )
@@ -293,7 +420,7 @@ class RogueDoc
       endForEach
       writer.print ')'
 
-    method read_api( api_file:File )
+    method load_api( api_file:File )
       local api = JSON.parse( api_file )
       if (not api//modules)
         throw Error( "Invalid API file - 'modules' array expected." )
@@ -305,26 +432,34 @@ class RogueDoc
             forEach (m in type//global_methods)
               m//is_routine = true
               m//sort_name = m//signature
-              update_signature( m )
-              add_to_group( m//filepath, m )
+              enhance_signature( m )
+              m//library_name = add_to_group( m//filepath, m )
             endForEach
           else
+            enhance_signature( forEach in type//global_methods )
+            enhance_signature( forEach in type//methods )
             types[type//scoped_name] = type
             type//sort_name = type//name
-            add_to_group( type//filepath, type )
+            type//library_name = add_to_group( type//filepath, type )
           endIf
         endForEach
       endForEach
 
-      groups.sort( (a,b) => a->String.compare_to(b->String,&ignore_case) <= 0 )
+      groups.sort( (a,b) => doc_sort(a,b) )
       forEach (group in groups.values)
-        group//files.sort( (a,b) => a->String.compare_to(b->String,&ignore_case) <= 0 )
+        group.sort( (a,b) => doc_sort(a,b) )
         forEach (file in group.values)
-          file.sort( (a,b) => a//sort_name->String.compare_to(b//sort_name,&ignore_case) <= 0 )
+          file.sort( (a,b) => doc_sort(a//sort_name,b//sort_name) )
+          forEach (type in file)
+            if (type//global_properties) type//global_properties.sort( (a,b) => doc_sort(a//name,b//name) )
+            if (type//properties)        type//properties.sort( (a,b) => doc_sort(a//name,b//name) )
+            if (type//global_methods)    type//global_methods.sort( (a,b) => doc_sort(a//signature,b//signature) )
+            if (type//methods)           type//methods.sort( (a,b) => doc_sort(a//signature,b//signature) )
+          endForEach
         endForEach
       endForEach
 
-    method add_to_group( filepath:String, value:Value )
+    method add_to_group( filepath:String, value:Value )->String
       local group_name = filepath.before_first(".rogue")
       if (group_name.contains('/')) group_name = File(group_name).folder
 
@@ -343,8 +478,9 @@ class RogueDoc
 
       file.add( value )
 
+      return group_name
+
     method without_module_names( text:String )->String
-local og = text
       local result = String()
       local scanner = Scanner( text )
       local id : String
@@ -372,14 +508,49 @@ local og = text
         result.print( id )
       endIf
 
-if (og.contains("Function") and not result.contains("Function"))
-trace og, result
-endIf
-
       return result
 
-    method update_signature( m:Value )
-      m//signature = without_module_names( m//signature->String )
+    method enhance_signature( m:Value )
+      m//signature = without_module_names( enhanced_signature(m) )
+
+    method enhanced_signature( m:Value, &with_links )->String
+      local sig = String()
+      sig.print( m//name )
+      sig.print( '(' )
+      local first = true
+      forEach (param in m//parameters)
+        if (first)
+          sig.print ' '
+          first = false
+        else
+          sig.print ", "
+        endIf
+        if (param//default_parameter)
+          sig.print '&'
+          sig.print param//name
+          if (param//default_value != "false")
+            sig.print '='
+            sig.print param//default_value
+          endIf
+        elseIf (param//default_value)
+          sig.print '['
+          sig.print param//name
+          sig.print '='
+          sig.print param//default_value
+          sig.print ':'
+          if (with_links) print_html_type( param//type, param//doc_type, sig )
+          else sig.print param//type
+          sig.print ']'
+        else
+          sig.print param//name
+          sig.print ':'
+          if (with_links) print_html_type( param//type, param//doc_type, sig )
+          else sig.print param//type
+        endIf
+      endForEach
+      if (not first) sig.print(' ')
+      sig.print( ')' )
+      return sig
 
     method parse_args( args:String[] )->Value
       local command = CommandLineParser().
@@ -412,3 +583,49 @@ endIf
                |================================================================================
 endClass
 
+routine doc_sort( a:String, b:String )->Logical
+  if (a.begins_with("init("))
+    if (not b.begins_with("init(")) return true
+  else
+    if (b.begins_with("init(")) return false
+  endIf
+
+  if (a.begins_with('_'))
+    if (not b.begins_with('_')) return false
+  else
+    if (b.begins_with('_')) return true
+  endIf
+
+  if (a.ends_with("()"))
+    if (not b.ends_with("()")) return true
+  else
+    if (b.ends_with("()")) return false
+  endIf
+
+  local limit = a.count.or_smaller( b.count )
+  forEach (i in 0..<limit)
+    local ch_a = a[i]
+    local ch_b = b[i]
+    if (ch_a.is_letter)
+      if (ch_b.is_letter)
+        local result = ch_a.to_lowercase <> ch_b.to_lowercase
+        if (result < 0) return true
+        if (result > 0) return false
+      else
+        return false  # b has fewer letters and thus comes before a
+      endIf
+    else
+      if (ch_b.is_letter)
+        return true
+      else
+        local result = ch_a - ch_b
+        if (result < 0) return true
+        if (result > 0) return false
+      endIf
+    endIf
+  endForEach
+
+  # Equal so far
+  if (a.count <= b.count) return a
+  else                    return b
+endRoutine
