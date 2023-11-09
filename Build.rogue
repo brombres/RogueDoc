@@ -33,7 +33,8 @@ endRoutine
 
 routine rogo_run
   # Runs this project.
-  execute "$ API.json --output=Wiki"(exe_file.esc)
+  execute (exe_file.esc)
+  #execute "$ API.json --output=Wiki"(exe_file.esc)
 endRoutine
 
 routine rogo_debug

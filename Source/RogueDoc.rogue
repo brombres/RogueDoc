@@ -6,7 +6,7 @@
 $define VERSION "1.0"
 $define DATE    "October 29, 2023"
 
-$requireRogue "2.32"
+$requireRogue "2.33"
 
 uses Console/CommandLineParser
 
@@ -21,6 +21,7 @@ class RogueDoc
   PROPERTIES
     output_folder : File
     output_file   : File
+    is_split  : Logical
 
     modules = @{}
     types   = @{}
@@ -55,6 +56,8 @@ class RogueDoc
         throw Error( "Too many arguments. A single API .json file is expected." )
       endIf
 
+      is_split = command//options//split?
+
       local api_file = File( command//args.first->String )
       if (not api_file.exists)
         throw Error( "No such API file: " + api_file )
@@ -83,52 +86,69 @@ class RogueDoc
     method generate_markdown
       generate_api_home
       generate_api_libraries
+      if (not is_split) writer.close
 
     method generate_api_home
+      println "Generating documentation..."
+      println "  $.md"(output_file)
       writer = (output_file+".md").print_writer
 
       writer.println "# Contents"
       forEach (group_name in groups.keys)
         writer.print "- "
-        print_html_link( group_name, group_name )
+        print_html_link( group_name, "", group_name )
         writer.println
         local group = groups[group_name]
         forEach (filename in group.keys)
-          writer.println "    - $"(filename)
-          local file = group[filename]
-          forEach (item in file)
-            writer.print "      - "
+          local indent = "    - "
+          local items = group[filename]
+          if (items.count > 1)
+            writer.println indent + filename
+            indent = "    " + indent
+          endIf
+          forEach (item in items)
+            writer.print indent
             local text : String
             if (item//is_routine)
               text = "routine $"(item//signature)
             else
               text = link_name( item//scoped_name )
             endIf
-            print_html_link( text, item//library_name )
+            print_html_link( text, text, item//library_name )
             writer.println
           endForEach
         endForEach
       endForEach
+      writer.println
 
-      writer.close
+      if (is_split) writer.close
 
     method generate_api_libraries
       forEach (group_name in groups.keys)
-        writer = (output_folder/"$-Library-API.md"(group_name)).print_writer
+        if (is_split)
+          local filename = "$-Library-API.md"(group_name)
+          println "  "+output_folder/filename
+          writer = (output_folder/filename).print_writer
+        endIf
 
-        print_html_anchor( "h1", group_name )
         local group = groups[group_name]
         forEach (filename in group.keys)
-          writer.println "## $"(filename)
-          local file = group[filename]
-          forEach (item in file)
+          writer.println "# $"(filename)
+          local items = group[filename]
+          forEach (item in items)
             local text : String
             if (item//is_routine)
-              text = "routine $"(item//signature)
-              print_html_anchor( "h3", text )
+              print_routine_info( item )
               writer.println
+
             else
-              print_html_anchor( "h3", link_name(item//scoped_name) )
+              print_html_anchor( "h2", link_name(item//scoped_name) )
+              if (item//augmented_type)
+                writer.print   "augments "
+                print_html_type( item//augmented_type, item//doc_augmented_type )
+                writer.println
+                writer.println
+              endIf
               if (item//base_class)
                 writer.print   "extends "
                 print_html_type( item//base_class, item//doc_base_class )
@@ -141,28 +161,28 @@ class RogueDoc
                   if (i > 0) writer.print ", "
                   local type = types[a]
                   if (type)
-                    print_html_link( link_name(type//scoped_name), type//library_name )
+                    print_html_link( type//name, link_name(type//scoped_name), type//library_name )
                   else
                     print_escaped_markdown( a )
                   endIf
                 endForEach
               endIf
+
+              print_html_description( item//description, "### Description" )
+
+              print_markdown_categories( item//categories )
+              print_markdown_properties( item//global_properties, "Global Properties" )
+              print_markdown_methods( item//global_methods, "Global Methods" )
+              print_markdown_properties( item//properties, "Properties" )
+              print_markdown_methods( item//methods, "Methods" )
             endIf
-
-            print_html_description( item//description )
-
-            print_markdown_categories( item//categories )
-            print_markdown_properties( item//global_properties, "Global Properties" )
-            print_markdown_methods( item//global_methods, "Global Methods" )
-            print_markdown_properties( item//properties, "Properties" )
-            print_markdown_methods( item//methods, "Methods" )
 
             writer.println
 
           endForEach
         endForEach
 
-        writer.close
+        if (is_split) writer.close
       endForEach
 
     method link_name( type_name:String )->String
@@ -223,16 +243,34 @@ class RogueDoc
         endWhich
       endForEach
 
-    method print_html_anchor( h:String, name:String )
+    method print_escaped_html_md( text:String, writer=this.writer:PrintWriter )->String
+      # Also escape markdown formatting *, _, `
+      forEach (ch in text)
+        which (ch)
+          case '&':  writer.print "&amp;"
+          case '<':  writer.print "&lt;"
+          case '>':  writer.print "&gt;"
+          case '*':  writer.print "&#42;"
+          case '_':  writer.print "&#95;"
+          case '`':  writer.print "&#96;"
+          others:    writer.print ch
+        endWhich
+      endForEach
+
+    method print_html_anchor( h:String, name:String, link=null:String )
+      if (not link) link = name
       writer.print ''<a name="''
-      print_html_url( name )
+      print_html_url( link )
       writer.print ''"><$>$</$></a>''(h,name,h)
       writer.println
       writer.println
 
-    method print_html_description( description:Value )
+    method print_html_description( description:Value, header=null:String )
       if (not description) return
+
       writer.println
+      if (header) writer.println header
+
       local text = description->String.trimmed
 
       local margin = 2
@@ -261,7 +299,7 @@ class RogueDoc
             if (ch == ' ') writer.print "&nbsp;"
             else           writer.print "&nbsp;&nbsp;"
           endForEach
-          print_escaped_html( line.unleft(indent.count) )
+          print_escaped_html_md( line.unleft(indent.count) )
           writer.print "<br>"
           indented = true
         else
@@ -275,13 +313,14 @@ class RogueDoc
               new_paragraph = false
             endIf
             print_escaped_html( line )
+            writer.print ' '
             indented = false
           endIf
         endIf
       endForEach
 
     method print_html_type( type_name:String, link_type_name:String, writer=this.writer:PrintWriter )
-      local type = types[type_name]
+      local type = types[link_type_name]
 
       local link_name = link_name( link_type_name )
 
@@ -307,7 +346,7 @@ class RogueDoc
       if (not categories) return
 
       writer.println
-      writer.println "#### Categories"
+      writer.println "### Categories"
       writer.println
       writer.println "<table>"
       writer.println "<tr><th>Category</th><th>Value</th><th>Description</th></tr>"
@@ -327,11 +366,15 @@ class RogueDoc
       writer.println "</table>"
       writer.println
 
+    method print_routine_info( m:Value )
+      print_html_anchor( "h2", "routine " + enhanced_signature(m,&with_links), "routine "+m//signature )
+      print_html_description( m//description, "### Description" )
+
     method print_markdown_methods( methods:Value, header:String )
       if (not methods) return
 
       writer.println
-      writer.println "#### $"(header)
+      writer.println "### $"(header)
       writer.println
       writer.println "<table>"
       writer.println "<tr><th>Signature</th><th>Return Type</th><th>Description</th></tr>"
@@ -355,7 +398,7 @@ class RogueDoc
       if (not properties) return
 
       writer.println
-      writer.println "#### $"(header)
+      writer.println "### $"(header)
       writer.println
       writer.println "<table>"
       writer.println "<tr><th>Name</th><th>Type</th><th>Description</th></tr>"
@@ -382,9 +425,11 @@ class RogueDoc
         writer.println line.after_first('#').trimmed
       endForEach
 
-    method print_html_link( text:String, library_name:String )->String
-      writer.print ''<a href="$-Library-API#''(library_name)
-      print_html_url( text )
+    method print_html_link( text:String, link:String, library_name:String )->String
+      writer.print ''<a href="''
+      if (is_split) writer.print ''$-Library-API''(library_name)
+      writer.print '#'
+      print_html_url( link )
       writer.print ''">''
       writer.print text
       writer.print "</a>"
@@ -425,6 +470,18 @@ class RogueDoc
       if (not api//modules)
         throw Error( "Invalid API file - 'modules' array expected." )
       endIf
+
+      forEach (mod in api//modules)
+        forEach (type in mod//types)
+          remove_items_with_leading_underscore( type, "categories" )
+          remove_items_with_leading_underscore( type, "global_properties" )
+          remove_items_with_leading_underscore( type, "global_methods" )
+          remove_items_with_leading_underscore( type, "properties" )
+          remove_items_with_leading_underscore( type, "methods" )
+        endForEach
+        remove_items_with_leading_underscore( mod, "types" )
+      endForEach
+
       forEach (mod in api//modules)
         modules[mod//name] = mod
         forEach (type in mod//types)
@@ -515,7 +572,8 @@ class RogueDoc
 
     method enhanced_signature( m:Value, &with_links )->String
       local sig = String()
-      sig.print( m//name )
+      if (with_links) print_escaped_html_md( without_module_names(m//name), sig )
+      else            sig.print( m//name )
       sig.print( '(' )
       local first = true
       forEach (param in m//parameters)
@@ -532,7 +590,7 @@ class RogueDoc
             sig.print '='
             sig.print param//default_value
           endIf
-        elseIf (param//default_value)
+        elseIf (param.contains("default_value"))
           sig.print '['
           sig.print param//name
           sig.print '='
@@ -552,11 +610,25 @@ class RogueDoc
       sig.print( ')' )
       return sig
 
+    method remove_items_with_leading_underscore( value:Value, table_name:String )
+      if (not value.contains(table_name)) return
+
+      forEach (item in value[table_name] step -1)
+        if (item//name->String.begins_with('_'))
+          value[table_name].remove( item )
+        endIf
+      endForEach
+
+      if (value[table_name].count == 0)
+        value.remove( table_name )
+      endIf
+
     method parse_args( args:String[] )->Value
       local command = CommandLineParser().
       [
         option( "--help",    &aliases=["-h","-?"] )
         option( "--output=", &alias="-o" )
+        option( "--split",   &alias="-s" )
       ].parse( args )
       return command
 
@@ -580,6 +652,10 @@ class RogueDoc
                |    Specify the file or folder to write output to. If a file is specified, only
                |    a high-level document is generated. If a folder is specified, both
                |    high-level and detailed documents will be generated.
+               |
+               |  --split, -s
+               |    Splits the output into a primary table of contents file with separate files
+               |    for each library path.
                |================================================================================
 endClass
 
@@ -590,18 +666,7 @@ routine doc_sort( a:String, b:String )->Logical
     if (b.begins_with("init(")) return false
   endIf
 
-  if (a.begins_with('_'))
-    if (not b.begins_with('_')) return false
-  else
-    if (b.begins_with('_')) return true
-  endIf
-
-  if (a.ends_with("()"))
-    if (not b.ends_with("()")) return true
-  else
-    if (b.ends_with("()")) return false
-  endIf
-
+  local checked_args = false
   local limit = a.count.or_smaller( b.count )
   forEach (i in 0..<limit)
     local ch_a = a[i]
@@ -618,6 +683,15 @@ routine doc_sort( a:String, b:String )->Logical
       if (ch_b.is_letter)
         return true
       else
+        if (not checked_args)
+          if (a.ends_with("()"))
+            if (not b.ends_with("()")) return true
+          else
+            if (b.ends_with("()")) return false
+          endIf
+          checked_args = true
+        endIf
+
         local result = ch_a - ch_b
         if (result < 0) return true
         if (result > 0) return false
@@ -626,6 +700,10 @@ routine doc_sort( a:String, b:String )->Logical
   endForEach
 
   # Equal so far
-  if (a.count <= b.count) return a
-  else                    return b
+  return (a.count <= b.count)
 endRoutine
+
+class _Dawg
+  METHODS
+    method _woof
+endClass
