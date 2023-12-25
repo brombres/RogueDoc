@@ -265,7 +265,7 @@ class RogueDoc
       writer.println
       writer.println
 
-    method print_html_description( description:Value, header=null:String )
+    method print_html_description( description:Variant, header=null:String )
       if (not description) return
 
       writer.println
@@ -342,7 +342,7 @@ class RogueDoc
         print_escaped_html( type_name, writer )
       endIf
 
-    method print_markdown_categories( categories:Value )
+    method print_markdown_categories( categories:Variant )
       if (not categories) return
 
       writer.println
@@ -366,11 +366,11 @@ class RogueDoc
       writer.println "</table>"
       writer.println
 
-    method print_routine_info( m:Value )
+    method print_routine_info( m:Variant )
       print_html_anchor( "h2", "routine " + enhanced_signature(m,&with_links), "routine "+m//signature )
       print_html_description( m//description, "### Description" )
 
-    method print_markdown_methods( methods:Value, header:String )
+    method print_markdown_methods( methods:Variant, header:String )
       if (not methods) return
 
       writer.println
@@ -394,7 +394,7 @@ class RogueDoc
       writer.println "</table>"
       writer.println
 
-    method print_markdown_properties( properties:Value, header:String )
+    method print_markdown_properties( properties:Variant, header:String )
       if (not properties) return
 
       writer.println
@@ -418,7 +418,7 @@ class RogueDoc
       writer.println "</table>"
       writer.println
 
-    method print_markdown_description( description:Value )
+    method print_markdown_description( description:Variant )
       if (not description) return
       local text = description->String.trimmed
       forEach (line in LineReader(text))
@@ -516,7 +516,7 @@ class RogueDoc
         endForEach
       endForEach
 
-    method add_to_group( filepath:String, value:Value )->String
+    method add_to_group( filepath:String, value:Variant )->String
       local group_name = filepath.before_first(".rogue")
       if (group_name.contains('/')) group_name = File(group_name).folder
 
@@ -567,10 +567,10 @@ class RogueDoc
 
       return result
 
-    method enhance_signature( m:Value )
+    method enhance_signature( m:Variant )
       m//signature = without_module_names( enhanced_signature(m) )
 
-    method enhanced_signature( m:Value, &with_links )->String
+    method enhanced_signature( m:Variant, &with_links )->String
       local sig = String()
       if (with_links) print_escaped_html_md( without_module_names(m//name), sig )
       else            sig.print( m//name )
@@ -610,7 +610,7 @@ class RogueDoc
       sig.print( ')' )
       return sig
 
-    method remove_items_with_leading_underscore( value:Value, table_name:String )
+    method remove_items_with_leading_underscore( value:Variant, table_name:String )
       if (not value.contains(table_name)) return
 
       forEach (item in value[table_name] step -1)
@@ -623,7 +623,7 @@ class RogueDoc
         value.remove( table_name )
       endIf
 
-    method parse_args( args:String[] )->Value
+    method parse_args( args:String[] )->Variant
       local command = CommandLineParser().
       [
         option( "--help",    &aliases=["-h","-?"] )
