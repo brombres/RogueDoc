@@ -23,9 +23,9 @@ class RogueDoc
     output_file   : File
     is_split  : Logical
 
-    modules = @{}
-    types   = @{}
-    groups  = @{}
+    libraries = @{}
+    types     = @{}
+    groups    = @{}
 
     writer : PrintWriter
 
@@ -467,11 +467,11 @@ class RogueDoc
 
     method load_api( api_file:File )
       local api = JSON.parse( api_file )
-      if (not api//modules)
-        throw Error( "Invalid API file - 'modules' array expected." )
+      if (not api//libraries)
+        throw Error( "Invalid API file - 'libraries' array expected." )
       endIf
 
-      forEach (mod in api//modules)
+      forEach (mod in api//libraries)
         forEach (type in mod//types)
           remove_items_with_leading_underscore( type, "categories" )
           remove_items_with_leading_underscore( type, "global_properties" )
@@ -482,8 +482,8 @@ class RogueDoc
         remove_items_with_leading_underscore( mod, "types" )
       endForEach
 
-      forEach (mod in api//modules)
-        modules[mod//name] = mod
+      forEach (mod in api//libraries)
+        libraries[mod//name] = mod
         forEach (type in mod//types)
           if (type//name == "Routine")
             forEach (m in type//global_methods)
