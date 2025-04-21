@@ -4,8 +4,8 @@ API documentation generator for Rogue.
 
 About     | Current Release
 ----------|-----------------------
-Version   | 1.2
-Date      | March 19, 2025
+Version   | 1.3
+Date      | April 20, 2025
 Platforms | Windows, macOS, Linux
 Author    | Brom Bresenham
 
